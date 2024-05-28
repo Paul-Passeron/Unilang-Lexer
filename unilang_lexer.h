@@ -10,6 +10,9 @@
 #ifndef UNILANG_LEXER_H
 #define UNILANG_LEXER_H
 
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -62,24 +65,37 @@ typedef struct {
 } Token;
 
 typedef struct {
+  const char *filename;
   const char *start;
   const char *current;
+  int length;
   int line;
   int col;
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);
+void lexer_init_from_file(Lexer *lexer, const char *filename);
 Token lexer_next_token(Lexer *lexer);
 const char *token_kind_to_string(TokenKind type);
+Token *tokenize(const char *filename, int *length);
+void debug_print_includes(void);
+void free_tokenized(void);
 
 #ifdef __cplusplus
 }
 #endif // __cplusplus
 
+// #define UNILANG_LEXER_IMPL
 #ifdef UNILANG_LEXER_IMPL
 
+#include <assert.h>
 #include <ctype.h>
+#include <libgen.h>
+#include <linux/limits.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 const char *token_kind_to_string(TokenKind type) {
   switch (type) {
@@ -231,9 +247,27 @@ int lexer_matches_string(Lexer lexer, const char *str) {
 
 void lexer_init(Lexer *lexer, const char *source) {
   lexer->start = source;
+  lexer->length = strlen(source);
   lexer->current = source;
   lexer->line = 1;
   lexer->col = 1;
+  lexer->filename = NULL;
+}
+// /!\ This function mallocs lexer->souree
+void lexer_init_from_file(Lexer *lexer, const char *path) {
+  FILE *f = fopen(path, "r");
+  if (f == NULL) {
+    assert(false && "TODO: Error reporting, Could not open file at path");
+  }
+  fseek(f, 0, SEEK_END);
+  size_t length = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  char *source = (char *)malloc(length + 1);
+  fread(source, 1, length, f);
+  fclose(f);
+  source[length] = 0;
+  lexer_init(lexer, source);
+  lexer->filename = path;
 }
 
 static char keywords[][12] = {
@@ -312,8 +346,10 @@ void clean_input(Lexer *lexer) {
     while (depth > 0 && lexer_peek_char(*lexer)) {
       if (lexer_matches_string(*lexer, "/*")) {
         depth++;
+        lexer_consume_char(lexer);
       } else if (lexer_matches_string(*lexer, "*/")) {
         depth--;
+        lexer_consume_char(lexer);
       }
       if (!lexer_consume_char(lexer))
         break;
@@ -445,6 +481,98 @@ Token lexer_next_token(Lexer *lexer) {
   }
   return (Token){TK_UNKNOWN, start, 0, line, col};
 }
+
+char paths[1024][PATH_MAX] = {0};
+const void *malloced_ptrs[PATH_MAX] = {0};
+int n_of_malloced = 0;
+int n_of_paths = 0;
+int res_index = 0;
+
+void free_malloced_ptrs(void) {
+  for (int i = 0; i < n_of_malloced; i++) {
+    free((void *)malloced_ptrs[i]);
+  }
+}
+
+void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
+  Token to_append = lexer_next_token(lexer);
+  while (to_append.type != TK_UNKNOWN) {
+
+    if (to_append.type == TK_INCLUDE) {
+      Token file = lexer_next_token(lexer);
+      if (file.type != TK_STRLIT) {
+        assert(false &&
+               "TODO: error reporting, no strlit filename after include "
+               "directive !");
+      }
+      char current[PATH_MAX] = {0};
+      char filepath[PATH_MAX] = {0};
+      char absolute[PATH_MAX] = {0};
+      if (lexer->filename == NULL) {
+        getcwd(filepath, PATH_MAX);
+      } else {
+        strcpy(current, lexer->filename);
+        strcpy(filepath, dirname(current));
+      }
+      strcat(filepath, "/");
+      memcpy(filepath + strlen(filepath), file.start + 1, file.length - 2);
+      if (realpath(filepath, absolute) == NULL) {
+        assert(false && "TODO: error reporting, name too long");
+      }
+      bool path_found = false;
+      for (int i = 0; i < n_of_paths; i++) {
+        if (strcmp(paths[i], absolute) == 0) {
+          path_found = true;
+          break;
+        }
+      }
+      if (!path_found) {
+        strcpy(paths[n_of_paths++], absolute);
+        Lexer new_l;
+        lexer_init_from_file(&new_l, absolute);
+        malloced_ptrs[n_of_malloced++] = new_l.start;
+        tokenize_aux(&new_l, res, capacity, length);
+      }
+
+    } else {
+      if (*capacity == *length) {
+        *capacity *= 2;
+        Token *new_res = realloc(*res, *capacity * sizeof(Token));
+        *res = new_res;
+      }
+      (*res)[(*length)++] = to_append;
+    }
+    to_append = lexer_next_token(lexer);
+  }
+}
+
+Token *tokenize(const char *filename, int *length) {
+  Lexer lexer;
+  lexer_init_from_file(&lexer, filename);
+  char absolute[PATH_MAX] = {0};
+  realpath(filename, absolute);
+  malloced_ptrs[n_of_malloced++] = lexer.start;
+  Token *res = malloc(lexer.length * sizeof(Token));
+  res_index = n_of_malloced;
+  malloced_ptrs[n_of_malloced++] = NULL;
+  strcpy(paths[n_of_paths++], absolute);
+
+  int l = 0;
+  int c = lexer.length;
+  tokenize_aux(&lexer, &res, &c, &l);
+  res = realloc(res, sizeof(Token) * l);
+  malloced_ptrs[res_index] = res;
+  *length = l;
+  return res;
+}
+
+void debug_print_includes(void) {
+  for (int i = 0; i < n_of_paths; i++) {
+    printf("%s\n", paths[i]);
+  }
+}
+
+void free_tokenized(void) { free_malloced_ptrs(); }
 
 #endif // UNILANG_LEXER_IMPL
 
