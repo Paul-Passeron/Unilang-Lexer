@@ -11,8 +11,10 @@
 #define UNILANG_LEXER_H
 
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -59,9 +61,10 @@ typedef enum {
 typedef struct {
   TokenKind type;
   const char *start; // Start of token in the source code
-  int length;        // Length of the token
-  int line;          // Line number where the token appears
-  int col;           // Col. number where the token appears
+  const char *filename;
+  int length; // Length of the token
+  int line;   // Line number where the token appears
+  int col;    // Col. number where the token appears
 } Token;
 
 typedef struct {
@@ -80,6 +83,9 @@ const char *token_kind_to_string(TokenKind type);
 Token *tokenize(const char *filename, int *length);
 void debug_print_includes(void);
 void free_tokenized(void);
+void print_lexeme(FILE *stream, Token t);
+int get_precedence(TokenKind t);
+bool is_unary_operator(TokenKind t);
 
 #ifdef __cplusplus
 }
@@ -92,10 +98,126 @@ void free_tokenized(void);
 #include <ctype.h>
 #include <libgen.h>
 #include <linux/limits.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+const char *token_kind_to_str(TokenKind t) {
+  switch (t) {
+  case TK_STRLIT:
+    return "TK_STRLIT";
+  case TK_NUMLIT:
+    return "TK_NUMLIT";
+  case TK_CHARLIT:
+    return "TK_CHARLIT";
+  case TK_IDENTIFIER:
+    return "TK_IDENTIFIER";
+  case TK_KEYWORD:
+    return "TK_KEYWORD";
+  case TK_PLUS:
+    return "TK_PLUS";
+  case TK_MINUS:
+    return "TK_MINUS";
+  case TK_MULT:
+    return "TK_MULT";
+  case TK_DIV:
+    return "TK_DIV";
+  case TK_MODULO:
+    return "TK_MODULO";
+  case TK_GRTR:
+    return "TK_GRTR";
+  case TK_GRTR_EQ:
+    return "TK_GRTR_EQ";
+  case TK_LSSR:
+    return "TK_LSSR";
+  case TK_LSSR_EQ:
+    return "TK_LSSR_EQ";
+  case TK_AND:
+    return "TK_AND";
+  case TK_OR:
+    return "TK_OR";
+  case TK_NOT:
+    return "TK_NOT";
+  case TK_EQ:
+    return "TK_EQ";
+  case TK_DIFF:
+    return "TK_DIFF";
+  case TK_BIGARR:
+    return "TK_BIGARR";
+  case TK_SMALLARR:
+    return "TK_SMALLARR";
+  case TK_OPENPAREN:
+    return "TK_OPENPAREN";
+  case TK_CLOSEPAREN:
+    return "TK_CLOSEPAREN";
+  case TK_OPENBRACKET:
+    return "TK_OPENBRACKET";
+  case TK_OPENBRACE:
+    return "TK_OPENBRACE";
+  case TK_CLOSEBRACKET:
+    return "TK_CLOSEBRACKET";
+  case TK_CLOSEBRACE:
+    return "TK_CLOSEBRACE";
+  case TK_COLON:
+    return "TK_COLON";
+  case TK_SEMICOLON:
+    return "TK_SEMICOLON";
+  case TK_DOT:
+    return "TK_DOT";
+  case TK_COMMA:
+    return "TK_COMMA";
+  default:
+    return "";
+  }
+}
+
+int get_precedence(TokenKind t) {
+  switch (t) {
+  case TK_MULT:
+  case TK_DIV:
+  case TK_MODULO:
+    return 11;
+  case TK_MINUS:
+    return 10;
+  case TK_PLUS:
+    return 9;
+  case TK_GRTR:
+  case TK_GRTR_EQ:
+  case TK_LSSR:
+  case TK_LSSR_EQ:
+    return 7;
+  case TK_EQ:
+  case TK_DIFF:
+    return 6;
+  case TK_LOG_AND:
+    return 5;
+  case TK_LOG_OR:
+    return 3;
+  case TK_AND:
+    return 2;
+  case TK_OR:
+    return 1;
+  default:
+    return -1;
+  }
+}
+
+bool is_unary_operator(TokenKind t) {
+  switch (t) {
+  case TK_MINUS:
+  case TK_PLUS:
+  case TK_NOT:
+    return true;
+  default:
+    return false;
+  }
+}
+
+void print_lexeme(FILE *stream, Token t) {
+  for (int i = 0; i < t.length; i++) {
+    putc(*(t.start + i), stream);
+  }
+}
 
 const char *token_kind_to_string(TokenKind type) {
   switch (type) {
@@ -254,7 +376,7 @@ void lexer_init(Lexer *lexer, const char *source) {
   lexer->filename = NULL;
 }
 // /!\ This function mallocs lexer->souree
-void lexer_init_from_file(Lexer *lexer, const char *path) {
+void lexer_iniTK_from_file(Lexer *lexer, const char *path) {
   FILE *f = fopen(path, "r");
   if (f == NULL) {
     assert(false && "TODO: Error reporting, Could not open file at path");
@@ -283,15 +405,17 @@ Token step_keyword(Lexer *lexer) {
     char *current = keywords[i];
     if (lexer_matches_string(*lexer, current)) {
       lexer_consume_n_chars(lexer, strlen(current));
-      return (Token){TK_KEYWORD, start, (int)strlen(current), line, col};
+      return (Token){TK_KEYWORD,           start, lexer->filename,
+                     (int)strlen(current), line,  col};
     }
   }
   char *current = keywords[sizeof(keywords) / sizeof(keywords[0]) - 1];
   if (lexer_matches_string(*lexer, current)) {
     lexer_consume_n_chars(lexer, strlen(current));
-    return (Token){TK_INCLUDE, start, (int)strlen(current), line, col};
+    return (Token){TK_INCLUDE,           start, lexer->filename,
+                   (int)strlen(current), line,  col};
   }
-  return (Token){TK_UNKNOWN, start, 0, line, col};
+  return (Token){TK_UNKNOWN, start, lexer->filename, 0, line, col};
 }
 
 int is_delim(char c) {
@@ -369,7 +493,7 @@ Token step_identifier(Lexer *lexer) {
     lexer_consume_char(lexer);
     length++;
   }
-  return (Token){TK_IDENTIFIER, start, length, line, col};
+  return (Token){TK_IDENTIFIER, start, lexer->filename, length, line, col};
 }
 
 Token step_numlit(Lexer *lexer) {
@@ -388,7 +512,7 @@ Token step_numlit(Lexer *lexer) {
     lexer_consume_char(lexer);
     length++;
   }
-  return (Token){TK_NUMLIT, start, length, line, col};
+  return (Token){TK_NUMLIT, start, lexer->filename, length, line, col};
 }
 
 Token step_strlit(Lexer *lexer) {
@@ -403,7 +527,7 @@ Token step_strlit(Lexer *lexer) {
   }
   lexer_consume_char(lexer);
   length++;
-  return (Token){TK_STRLIT, start, length, line, col};
+  return (Token){TK_STRLIT, start, lexer->filename, length, line, col};
 }
 
 Token step_charlit(Lexer *lexer) {
@@ -418,7 +542,7 @@ Token step_charlit(Lexer *lexer) {
   }
   lexer_consume_char(lexer);
   length++;
-  return (Token){TK_CHARLIT, start, length, line, col};
+  return (Token){TK_CHARLIT, start, lexer->filename, length, line, col};
 }
 
 #define OPCOUNT 29
@@ -446,11 +570,12 @@ Token step_delim(Lexer *lexer) {
     if (lexer_matches_string(*lexer, delimiters[i])) {
       lexer_consume_n_chars(lexer, strlen(delimiters[i]));
       return (Token){
-          dels_kinds[i], start, (int)strlen(delimiters[i]), line, col,
+          dels_kinds[i], start, lexer->filename, (int)strlen(delimiters[i]),
+          line,          col,
       };
     }
   }
-  return (Token){TK_UNKNOWN, start, 0, line, col};
+  return (Token){TK_UNKNOWN, start, lexer->filename, 0, line, col};
 }
 
 Token lexer_next_token(Lexer *lexer) {
@@ -479,7 +604,7 @@ Token lexer_next_token(Lexer *lexer) {
       return step_delim(lexer);
     }
   }
-  return (Token){TK_UNKNOWN, start, 0, line, col};
+  return (Token){TK_UNKNOWN, start, lexer->filename, 0, line, col};
 }
 
 char paths[1024][PATH_MAX] = {0};
@@ -529,7 +654,7 @@ void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
       if (!path_found) {
         strcpy(paths[n_of_paths++], absolute);
         Lexer new_l;
-        lexer_init_from_file(&new_l, absolute);
+        lexer_iniTK_from_file(&new_l, absolute);
         malloced_ptrs[n_of_malloced++] = new_l.start;
         tokenize_aux(&new_l, res, capacity, length);
       }
@@ -537,7 +662,7 @@ void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
     } else {
       if (*capacity == *length) {
         *capacity *= 2;
-        Token *new_res = realloc(*res, *capacity * sizeof(Token));
+        Token *new_res = (Token *)realloc(*res, *capacity * sizeof(Token));
         *res = new_res;
       }
       (*res)[(*length)++] = to_append;
@@ -548,11 +673,11 @@ void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
 
 Token *tokenize(const char *filename, int *length) {
   Lexer lexer;
-  lexer_init_from_file(&lexer, filename);
+  lexer_iniTK_from_file(&lexer, filename);
   char absolute[PATH_MAX] = {0};
   realpath(filename, absolute);
   malloced_ptrs[n_of_malloced++] = lexer.start;
-  Token *res = malloc(lexer.length * sizeof(Token));
+  Token *res = (Token *)malloc(lexer.length * sizeof(Token));
   res_index = n_of_malloced;
   malloced_ptrs[n_of_malloced++] = NULL;
   strcpy(paths[n_of_paths++], absolute);
@@ -560,13 +685,13 @@ Token *tokenize(const char *filename, int *length) {
   int l = 0;
   int c = lexer.length;
   tokenize_aux(&lexer, &res, &c, &l);
-  res = realloc(res, sizeof(Token) * l);
+  res = (Token *)realloc(res, sizeof(Token) * l);
   malloced_ptrs[res_index] = res;
   *length = l;
   return res;
 }
 
-void debug_print_includes(void) {
+void debug_prinTK_includes(void) {
   for (int i = 0; i < n_of_paths; i++) {
     printf("%s\n", paths[i]);
   }
