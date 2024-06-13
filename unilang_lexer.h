@@ -93,6 +93,7 @@ bool is_unary_operator(TokenKind t);
 
 // #define UNILANG_LEXER_IMPL
 #ifdef UNILANG_LEXER_IMPL
+#include "../unilang_error.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -376,7 +377,7 @@ void lexer_init(Lexer *lexer, const char *source) {
   lexer->filename = NULL;
 }
 // /!\ This function mallocs lexer->souree
-void lexer_iniTK_from_file(Lexer *lexer, const char *path) {
+void lexer_init_from_file(Lexer *lexer, const char *path) {
   FILE *f = fopen(path, "r");
   if (f == NULL) {
     assert(false && "TODO: Error reporting, Could not open file at path");
@@ -642,7 +643,7 @@ void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
       strcat(filepath, "/");
       memcpy(filepath + strlen(filepath), file.start + 1, file.length - 2);
       if (realpath(filepath, absolute) == NULL) {
-        assert(false && "TODO: error reporting, name too long");
+        unilang_error(file, EK_FILE_NOT_FOUND);
       }
       bool path_found = false;
       for (int i = 0; i < n_of_paths; i++) {
@@ -654,7 +655,7 @@ void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
       if (!path_found) {
         strcpy(paths[n_of_paths++], absolute);
         Lexer new_l;
-        lexer_iniTK_from_file(&new_l, absolute);
+        lexer_init_from_file(&new_l, absolute);
         malloced_ptrs[n_of_malloced++] = new_l.start;
         tokenize_aux(&new_l, res, capacity, length);
       }
@@ -673,7 +674,7 @@ void tokenize_aux(Lexer *lexer, Token **res, int *capacity, int *length) {
 
 Token *tokenize(const char *filename, int *length) {
   Lexer lexer;
-  lexer_iniTK_from_file(&lexer, filename);
+  lexer_init_from_file(&lexer, filename);
   char absolute[PATH_MAX] = {0};
   realpath(filename, absolute);
   malloced_ptrs[n_of_malloced++] = lexer.start;
@@ -691,7 +692,7 @@ Token *tokenize(const char *filename, int *length) {
   return res;
 }
 
-void debug_prinTK_includes(void) {
+void debug_print_includes(void) {
   for (int i = 0; i < n_of_paths; i++) {
     printf("%s\n", paths[i]);
   }
